@@ -1,0 +1,53 @@
+---
+description: HiDock recorder SDK. Jensen USB, decode, and speaker transcript.
+alwaysApply: true
+---
+
+# highdock-rs (crate: `highdock_rs`)
+
+One package for a HiDock recorder at `projects/highdock-rs/`.
+
+It opens the recorder, downloads a recording, decodes the file, and writes speaker lines.
+`Transcript` lists each speaker, then the conversation in time order.
+`write_json` writes that document. It does not store the recording.
+
+## Boundary
+
+Do not add storage, a knowledge graph, or an application UI here.
+
+Do not add card format, factory reset, firmware upload, or a USB port reset.
+A port reset during a transfer can wedge the recorder firmware.
+
+## Protocol
+
+The wire format is Jensen on bulk OUT `0x01` and bulk IN `0x82`.
+
+One command is active at a time. A protocol fault poisons the session.
+The caller drops `Device` and reconnects the recorder. Do not clear the poison
+flag to continue the same USB claim.
+
+## USB
+
+`detach_and_claim_interface(0)` releases a kernel driver on Linux for interface 0
+of the matched recorder only.
+
+IN reads stay at 8192 bytes. A larger read can sit forever on an exact H1E frame.
+
+## Audio
+
+A P1 file is Ogg Opus at 16 kHz or MPEG-1 Layer III at 48 kHz.
+Decode either one to 16 kHz mono `f32` before Polyvoice.
+
+Reject an empty file, a file over 256 MiB, and audio longer than one hour.
+A final Ogg page that ends early keeps the packets before that page.
+Do not log sample values.
+
+Diarization weights come from the Polyvoice registry. The call verifies them.
+
+The Parakeet directory is a local path the caller passes. Do not download it
+inside this crate. A hostile ONNX file in that directory is trusted input.
+
+## Tests
+
+`cargo test` uses a fake transport and decodes a generated Opus page.
+It does not open a recorder and it does not load a speech model.

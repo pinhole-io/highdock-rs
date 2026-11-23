@@ -1,0 +1,28 @@
+[package]
+name = "highdock-rs"
+version = "0.1.0"
+edition = "2024"
+description = "SDK for HiDock recorders"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/pinhole-io/highdock-rs"
+rust-version = "1.94"
+
+[dependencies]
+nusb = { version = "0.2", features = ["tokio"] }
+opus-pure = "0.2"
+polyvoice = { git = "https://github.com/ekhodzitsky/polyvoice", rev = "80bf4b1f95f8ca43b8f9351d717eddd72ac5f9cb", features = [
+    "pipeline-native",
+    "vbx",
+    "attribution",
+] }
+polyvoice-asr = { git = "https://github.com/ekhodzitsky/polyvoice", rev = "80bf4b1f95f8ca43b8f9351d717eddd72ac5f9cb" }
+rubato = "0.16"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "pcm", "wav"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
