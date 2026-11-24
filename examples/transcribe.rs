@@ -136,7 +136,7 @@ impl Args {
 
 async fn write_card(model: &Path, out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(out)?;
-    let engine = TranscriptEngine::open(model)?;
+    let mut engine = TranscriptEngine::open(model)?;
     let mut device = highdock_rs::Device::open_first().await?;
     let recordings = device.list_recordings().await?;
     let mut book = TranscriptBook::new();

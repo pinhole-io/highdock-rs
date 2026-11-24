@@ -24,6 +24,7 @@ mod device;
 mod error;
 mod frame;
 mod ids;
+mod roster;
 #[cfg(test)]
 mod session_tests;
 mod speakers;
@@ -36,6 +37,7 @@ pub use audio::{Speech, decode_recording};
 pub use device::Device;
 pub use error::{Error, Result};
 pub use ids::DeviceModel;
+pub use roster::SpeakerRoster;
 pub use speakers::{SpokenLine, TranscriptEngine, separate_speakers, transcribe};
 pub use transcript::{Line, Person, TimedText, Transcript, TranscriptBook};
 pub use transport::Transport;

@@ -24,7 +24,7 @@ pub struct Transcript {
 /// One speaker and that speaker's lines.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Person {
-    /// `SPEAKER_00`, `SPEAKER_01`, and so on.
+    /// `SPEAKER_00` for a roster voice. `UNLINKED_00` for a voice this file could not match.
     pub id: String,
     /// This speaker's lines in start-time order.
     pub messages: Vec<TimedText>,

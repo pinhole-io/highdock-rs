@@ -14,6 +14,7 @@ It opens the recorder, downloads a recording, decodes the file, and writes speak
 ## Boundary
 
 Do not add storage, a knowledge graph, or an application UI here.
+The speaker roster is process memory. The crate does not write it, and transcript JSON has no voice vector.
 
 Do not add card format, factory reset, firmware upload, or a USB port reset.
 A port reset during a transfer can wedge the recorder firmware.
