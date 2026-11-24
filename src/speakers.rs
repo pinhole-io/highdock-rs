@@ -6,13 +6,16 @@
 //! [`TranscriptEngine`] keeps one speaker id across the recordings it sees.
 //! The voice roster stays in memory. This crate does not write it.
 
+use std::collections::VecDeque;
 use std::fmt::Display;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::thread;
 
 use polyvoice::utils::l2_normalize;
 use polyvoice::{
-    DiarizationResult, Embedder, EmbedderError, ModelRegistry, Pipeline, Profile, ResNet34Native,
-    SampleRate, SpeakerTurn, who_said_what,
+    Embedder, EmbedderError, ModelRegistry, Pipeline, Profile, ResNet34Native, SampleRate,
+    SpeakerTurn, who_said_what,
 };
 use polyvoice_asr::ParakeetAsr;
 
@@ -89,9 +92,15 @@ pub fn transcribe(speech: &Speech, model_dir: &Path) -> Result<Vec<SpokenLine>> 
 }
 
 /// Diarization, speech models, and the voice roster for more than one recording.
+///
+/// [`Self::transcribe_batch`] runs several recordings at once. The roster is
+/// applied in slice order, so a voice keeps the same id as a one-by-one run.
 pub struct TranscriptEngine {
+    model_dir: PathBuf,
     pipeline: Pipeline,
     asr: ParakeetAsr,
+    /// Extra Parakeet sessions. One session transcribes one file at a time.
+    extra_asr: Vec<ParakeetAsr>,
     embedder: ResNet34Native,
     roster: SpeakerRoster,
 }
@@ -103,8 +112,10 @@ impl TranscriptEngine {
         let embedder = embedder()?;
         let asr = ParakeetAsr::from_dir(model_dir).map_err(transcript_err)?;
         Ok(Self {
+            model_dir: model_dir.to_path_buf(),
             pipeline,
             asr,
+            extra_asr: Vec::new(),
             embedder,
             roster: SpeakerRoster::new(),
         })
@@ -131,10 +142,7 @@ impl TranscriptEngine {
     /// A speaker with no slice of at least 0.20 s stays `UNLINKED_00` for this
     /// file and does not enter the roster.
     pub fn transcribe(&mut self, speech: &Speech) -> Result<Vec<SpokenLine>> {
-        let result = self.diarize(speech)?;
-        let spoken = who_said_what(&result.turns, &self.asr, &speech.samples, sample_rate()?)
-            .map_err(transcript_err)?;
-        let mut spoken_lines = lines(&spoken.turns);
+        let mut spoken_lines = recognize(&self.pipeline, &self.asr, speech)?;
         link_speakers(
             &self.embedder,
             &mut self.roster,
@@ -144,16 +152,134 @@ impl TranscriptEngine {
         Ok(spoken_lines)
     }
 
-    fn diarize(&self, speech: &Speech) -> Result<DiarizationResult> {
-        if speech.samples.is_empty() {
-            return Err(Error::EmptyRecording);
+    /// Transcribe every recording. At most [`transcription_width`] run at once.
+    ///
+    /// The roster is applied in slice order. One failed recording does not
+    /// drop the others. An error from loading a session fails the whole call.
+    pub fn transcribe_batch(
+        &mut self,
+        speeches: &[Speech],
+    ) -> Result<Vec<Result<Vec<SpokenLine>>>> {
+        if speeches.is_empty() {
+            return Ok(Vec::new());
         }
-        if speech.samples.len() > 16_000 * 3_600 {
-            return Err(Error::RecordingTooLong);
+        if speeches.len() == 1 {
+            return Ok(vec![self.transcribe(&speeches[0])]);
         }
-        self.pipeline
-            .run(&speech.samples, sample_rate()?)
-            .map_err(speakers_err)
+        let jobs = asr_workers(cpu_count(), speeches.len());
+        self.ensure_sessions(jobs)?;
+        let _width = FileWidth::new(jobs);
+        let slots: Vec<Mutex<Option<Result<Vec<SpokenLine>>>>> =
+            (0..speeches.len()).map(|_| Mutex::new(None)).collect();
+        let queue = Mutex::new((0..speeches.len()).collect::<VecDeque<_>>());
+        let sessions: Vec<&ParakeetAsr> = std::iter::once(&self.asr)
+            .chain(self.extra_asr.iter())
+            .take(jobs)
+            .collect();
+        thread::scope(|scope| {
+            for asr in sessions {
+                let queue = &queue;
+                let slots = &slots;
+                let pipeline = &self.pipeline;
+                scope.spawn(move || {
+                    while let Some(index) = pop_index(queue) {
+                        let recognized = recognize(pipeline, asr, &speeches[index]);
+                        *slots[index].lock().unwrap_or_else(|err| err.into_inner()) =
+                            Some(recognized);
+                    }
+                });
+            }
+        });
+        let mut output = Vec::with_capacity(speeches.len());
+        for (speech, slot) in speeches.iter().zip(slots) {
+            let recognized = slot
+                .into_inner()
+                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(|| {
+                    Err(Error::Transcript(
+                        "the recording was not transcribed".into(),
+                    ))
+                });
+            let linked = match recognized {
+                Ok(mut spoken_lines) => link_speakers(
+                    &self.embedder,
+                    &mut self.roster,
+                    &mut spoken_lines,
+                    &speech.samples,
+                )
+                .map(|()| spoken_lines),
+                Err(err) => Err(err),
+            };
+            output.push(linked);
+        }
+        Ok(output)
+    }
+
+    fn ensure_sessions(&mut self, jobs: usize) -> Result<()> {
+        while self.extra_asr.len() + 1 < jobs {
+            let asr = ParakeetAsr::from_dir(&self.model_dir).map_err(transcript_err)?;
+            self.extra_asr.push(asr);
+        }
+        Ok(())
+    }
+}
+
+/// How many recordings to transcribe at once.
+///
+/// Each Parakeet session uses 4 threads. The width stays at or below 4, and
+/// at or below one quarter of the CPUs. One file stays on one session.
+pub fn transcription_width(files: usize) -> usize {
+    asr_workers(cpu_count(), files)
+}
+
+fn asr_workers(cpus: usize, files: usize) -> usize {
+    if files <= 1 {
+        return 1;
+    }
+    (cpus / 4).clamp(1, 4).min(files)
+}
+
+fn cpu_count() -> usize {
+    thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+}
+
+fn recognize(pipeline: &Pipeline, asr: &ParakeetAsr, speech: &Speech) -> Result<Vec<SpokenLine>> {
+    if speech.samples.is_empty() {
+        return Err(Error::EmptyRecording);
+    }
+    if speech.samples.len() > 16_000 * 3_600 {
+        return Err(Error::RecordingTooLong);
+    }
+    let result = pipeline
+        .run(&speech.samples, sample_rate()?)
+        .map_err(speakers_err)?;
+    let spoken = who_said_what(&result.turns, asr, &speech.samples, sample_rate()?)
+        .map_err(transcript_err)?;
+    Ok(lines(&spoken.turns))
+}
+
+fn pop_index(queue: &Mutex<VecDeque<usize>>) -> Option<usize> {
+    queue
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .pop_front()
+}
+
+/// Puts the kernel fan-out back to one file when this value drops.
+struct FileWidth;
+
+impl FileWidth {
+    fn new(jobs: usize) -> Self {
+        polyvoice_kernels::set_file_parallelism(jobs);
+        Self
+    }
+}
+
+impl Drop for FileWidth {
+    fn drop(&mut self) {
+        polyvoice_kernels::set_file_parallelism(1);
     }
 }
 
@@ -329,6 +455,15 @@ mod tests {
             end_secs: end,
             text: text.to_string(),
         }
+    }
+
+    #[test]
+    fn four_cpus_run_one_file_and_thirty_two_cpus_run_four() {
+        assert_eq!(asr_workers(4, 10), 1);
+        assert_eq!(asr_workers(8, 10), 2);
+        assert_eq!(asr_workers(32, 10), 4);
+        assert_eq!(asr_workers(32, 1), 1);
+        assert_eq!(asr_workers(32, 3), 3);
     }
 
     #[test]

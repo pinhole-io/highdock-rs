@@ -38,7 +38,9 @@ pub use device::Device;
 pub use error::{Error, Result};
 pub use ids::DeviceModel;
 pub use roster::SpeakerRoster;
-pub use speakers::{SpokenLine, TranscriptEngine, separate_speakers, transcribe};
+pub use speakers::{
+    SpokenLine, TranscriptEngine, separate_speakers, transcribe, transcription_width,
+};
 pub use transcript::{Line, Person, TimedText, Transcript, TranscriptBook};
 pub use transport::Transport;
 pub use types::{

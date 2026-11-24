@@ -139,7 +139,9 @@ async fn write_card(model: &Path, out: &Path) -> Result<(), Box<dyn std::error::
     let mut engine = TranscriptEngine::open(model)?;
     let mut device = highdock_rs::Device::open_first().await?;
     let recordings = device.list_recordings().await?;
+    let width = highdock_rs::transcription_width(recordings.len());
     let mut book = TranscriptBook::new();
+    let mut group: Vec<(String, highdock_rs::Speech)> = Vec::new();
     for recording in &recordings {
         if recording.bytes == 0 {
             eprintln!("skip {} (0 bytes)", recording.name);
@@ -162,19 +164,42 @@ async fn write_card(model: &Path, out: &Path) -> Result<(), Box<dyn std::error::
                 continue;
             }
         };
-        let lines = match engine.transcribe(&speech) {
-            Ok(lines) => lines,
+        group.push((recording.name.clone(), speech));
+        if group.len() >= width {
+            write_group(&mut engine, &mut book, out, &mut group)?;
+        }
+    }
+    write_group(&mut engine, &mut book, out, &mut group)?;
+    export_book(&book, out)?;
+    Ok(())
+}
+
+fn write_group(
+    engine: &mut TranscriptEngine,
+    book: &mut TranscriptBook,
+    out: &Path,
+    group: &mut Vec<(String, highdock_rs::Speech)>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if group.is_empty() {
+        return Ok(());
+    }
+    let names: Vec<String> = group.iter().map(|(name, _)| name.clone()).collect();
+    let speeches: Vec<_> = group.drain(..).map(|(_, speech)| speech).collect();
+    let transcribed = engine.transcribe_batch(&speeches)?;
+    for (name, lines) in names.into_iter().zip(transcribed) {
+        let path = out.join(transcript_name(&name));
+        match lines {
+            Ok(lines) => {
+                fs::write(&path, render(&lines))?;
+                book.push(Transcript::from_lines(name, &lines));
+                eprintln!("wrote {}", path.display());
+            }
             Err(err) => {
                 eprintln!("{err}");
                 fs::write(&path, format!("{err}\n"))?;
-                continue;
             }
-        };
-        fs::write(&path, render(&lines))?;
-        book.push(Transcript::from_lines(recording.name.clone(), &lines));
-        eprintln!("wrote {}", path.display());
+        }
     }
-    export_book(&book, out)?;
     Ok(())
 }
 

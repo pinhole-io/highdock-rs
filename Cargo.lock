@@ -502,6 +502,7 @@ dependencies = [
  "opus-pure",
  "polyvoice",
  "polyvoice-asr",
+ "polyvoice-kernels",
  "rubato",
  "serde",
  "serde_json",
